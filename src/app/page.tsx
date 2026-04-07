@@ -58,7 +58,13 @@ export default function Home() {
     keywords: string;
   } | null>(null);
   const [showBlog, setShowBlog] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setErrorRaw] = useState("");
+  const setError = (msg: string) => {
+    setErrorRaw(msg);
+    if (msg) {
+      setTimeout(() => setErrorRaw((prev) => prev === msg ? "" : prev), 8000);
+    }
+  };
 
   // Load video
   const loadVideo = async () => {
