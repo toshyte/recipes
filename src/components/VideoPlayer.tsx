@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 
 interface VideoPlayerProps {
   videoId: string;
@@ -13,78 +13,62 @@ interface VideoPlayerProps {
 
 export default function VideoPlayer({
   videoId,
-  videoUrl,
   thumbnail,
   duration,
   onTimestampSelect,
   currentTime,
 }: VideoPlayerProps) {
   const [time, setTime] = useState(currentTime ?? 0);
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
-  const [loadingPreview, setLoadingPreview] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showEmbed, setShowEmbed] = useState(false);
 
   // Sync when parent changes currentTime (e.g. clicking a suggestion)
   useEffect(() => {
     if (currentTime !== undefined) {
       setTime(currentTime);
-      fetchPreview(currentTime);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTime]);
 
-  // Fetch frame preview when time changes (debounced)
-  const fetchPreview = useCallback(
-    (t: number) => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(async () => {
-        setLoadingPreview(true);
-        try {
-          const res = await fetch("/api/extract-frame", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: videoUrl, timestamp: Math.floor(t) }),
-          });
-          const data = await res.json();
-          if (data.image) {
-            setPreviewImage(data.image);
-          }
-        } catch {
-          // Silently fail — thumbnail stays visible
-        } finally {
-          setLoadingPreview(false);
-        }
-      }, 600);
-    },
-    [videoUrl]
-  );
-
   const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
     const sec = Math.floor(s % 60);
+    if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
     return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
   const thumbUrl =
     thumbnail || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
 
-  const displayImage = previewImage || thumbUrl;
-
   return (
     <div className="relative">
-      {/* Frame preview */}
+      {/* Video preview area */}
       <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-black">
-        <img
-          src={displayImage}
-          alt="Video frame preview"
-          className="w-full h-full object-cover"
-        />
-
-        {/* Loading overlay */}
-        {loadingPreview && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/30">
-            <div className="w-8 h-8 border-3 border-white border-t-transparent rounded-full animate-spin" />
-          </div>
+        {showEmbed ? (
+          <iframe
+            src={`https://www.youtube.com/embed/${videoId}?start=${Math.floor(time)}&autoplay=1&rel=0`}
+            className="w-full h-full"
+            allow="autoplay; encrypted-media"
+            allowFullScreen
+          />
+        ) : (
+          <>
+            <img
+              src={thumbUrl}
+              alt="Video thumbnail"
+              className="w-full h-full object-cover"
+            />
+            {/* Play button overlay */}
+            <button
+              onClick={() => setShowEmbed(true)}
+              className="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/30 transition-colors cursor-pointer group"
+            >
+              <div className="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="white">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </div>
+            </button>
+          </>
         )}
 
         {/* YouTube link */}
@@ -92,7 +76,7 @@ export default function VideoPlayer({
           href={`https://www.youtube.com/watch?v=${videoId}&t=${Math.floor(time)}s`}
           target="_blank"
           rel="noopener noreferrer"
-          className="absolute bottom-3 left-3 flex items-center gap-2 bg-red-600/90 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-full transition-colors"
+          className="absolute bottom-3 left-3 flex items-center gap-2 bg-red-600/90 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-full transition-colors z-10"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
             <path d="M8 5v14l11-7z" />
@@ -101,16 +85,9 @@ export default function VideoPlayer({
         </a>
 
         {/* Time badge */}
-        <div className="absolute top-3 right-3 bg-black/80 text-white text-sm px-3 py-1.5 rounded-lg font-mono">
+        <div className="absolute top-3 right-3 bg-black/80 text-white text-sm px-3 py-1.5 rounded-lg font-mono z-10">
           {formatTime(time)} / {formatTime(duration)}
         </div>
-
-        {/* Preview indicator */}
-        {previewImage && (
-          <div className="absolute top-3 left-3 bg-green-600/80 text-white text-xs px-2 py-1 rounded">
-            Live Frame Preview
-          </div>
-        )}
       </div>
 
       {/* Timeline scrubber */}
@@ -120,20 +97,23 @@ export default function VideoPlayer({
           <input
             type="range"
             min="0"
-            max={Math.floor(duration)}
+            max={Math.max(1, Math.floor(duration))}
             value={Math.floor(time)}
             onChange={(e) => {
               const t = Number(e.target.value);
               setTime(t);
+              // Update YouTube embed to this time
+              if (showEmbed) {
+                setShowEmbed(false);
+                setTimeout(() => setShowEmbed(true), 100);
+              }
             }}
-            onMouseUp={() => fetchPreview(time)}
-            onTouchEnd={() => fetchPreview(time)}
             className="flex-1 accent-[var(--accent)] h-2"
           />
           <span className="text-xs text-[var(--muted)]">{formatTime(duration)}</span>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           {/* Quick jump buttons */}
           <div className="flex gap-1.5">
             {[-30, -10, -1, 1, 10, 30].map((delta) => (
@@ -142,7 +122,6 @@ export default function VideoPlayer({
                 onClick={() => {
                   const t = Math.max(0, Math.min(duration, time + delta));
                   setTime(t);
-                  fetchPreview(t);
                 }}
                 className="px-2.5 py-1.5 text-xs bg-[var(--bg)] border border-[var(--border)] rounded-lg hover:border-[var(--accent)] transition-colors cursor-pointer"
               >
@@ -151,13 +130,15 @@ export default function VideoPlayer({
             ))}
           </div>
 
-          {/* Preview button */}
+          {/* Play at time button */}
           <button
-            onClick={() => fetchPreview(time)}
-            disabled={loadingPreview}
-            className="px-3 py-1.5 text-xs border border-[var(--border)] rounded-lg hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors cursor-pointer disabled:opacity-50"
+            onClick={() => {
+              setShowEmbed(false);
+              setTimeout(() => setShowEmbed(true), 100);
+            }}
+            className="px-3 py-1.5 text-xs border border-[var(--border)] rounded-lg hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors cursor-pointer"
           >
-            {loadingPreview ? "Loading..." : "Preview"}
+            Preview
           </button>
 
           {/* Capture button */}

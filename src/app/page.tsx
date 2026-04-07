@@ -15,6 +15,7 @@ interface VideoInfo {
   description: string;
   channel: string;
   videoId: string;
+  streamUrl?: string | null;
 }
 
 interface Suggestion {
@@ -83,17 +84,10 @@ export default function Home() {
       setSelectedThumbs({});
       setThumbPreviews({});
       setAdjustingThumb(null);
-      setStreamUrl(null);
+      setStreamUrl(data.streamUrl || null);
       setStep("capture");
 
-      // Fetch stream URL and transcript in background
-      fetch(`/api/video-stream?v=${data.videoId}`)
-        .then((r) => r.json())
-        .then((d) => {
-          if (d.streamUrl) setStreamUrl(d.streamUrl);
-        })
-        .catch(() => {});
-
+      // Fetch transcript in background
       fetch("/api/transcript", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -116,6 +110,31 @@ export default function Home() {
     (timestamp: number): Promise<string> => {
       return new Promise((resolve, reject) => {
         if (!streamUrl) {
+          // Fallback: use YouTube thumbnail (low quality but works everywhere)
+          if (videoInfo?.videoId) {
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.onload = () => {
+              const canvas = document.createElement("canvas");
+              canvas.width = img.naturalWidth;
+              canvas.height = img.naturalHeight;
+              const ctx = canvas.getContext("2d")!;
+              ctx.drawImage(img, 0, 0);
+              try {
+                resolve(canvas.toDataURL("image/jpeg", 0.92));
+              } catch {
+                // CORS blocked, fetch via proxy
+                resolve(img.src);
+              }
+            };
+            img.onerror = () => {
+              reject(new Error("Video stream not available. Try loading the video again."));
+            };
+            // Use YouTube's i.ytimg.com - provides thumbnails at different points
+            // Unfortunately only a few standard thumbnails exist
+            img.src = `https://img.youtube.com/vi/${videoInfo.videoId}/maxresdefault.jpg`;
+            return;
+          }
           reject(new Error("Video stream not ready yet. Please wait a moment and try again."));
           return;
         }
@@ -236,49 +255,118 @@ export default function Home() {
 
   // Extract thumbnail grid client-side (every N seconds)
   const extractThumbnailGrid = async (interval = 1) => {
-    if (!streamUrl || !videoInfo) {
-      setError("Video stream not ready yet. Please wait a moment and try again.");
-      return;
-    }
+    if (!videoInfo) return;
+
     setLoading("Extracting frames (this may take a moment)...");
     setThumbnailGrid([]);
     setSelectedThumbs({});
 
     try {
-      const video = document.createElement("video");
-      video.crossOrigin = "anonymous";
-      video.preload = "auto";
-      video.muted = true;
+      if (streamUrl) {
+        // Direct video stream available — extract frames client-side
+        const video = document.createElement("video");
+        video.crossOrigin = "anonymous";
+        video.preload = "auto";
+        video.muted = true;
 
-      await new Promise<void>((resolve, reject) => {
-        video.onloadedmetadata = () => resolve();
-        video.onerror = () => reject(new Error("Failed to load video"));
-        setTimeout(() => reject(new Error("Video load timed out")), 30000);
-        video.src = streamUrl;
-      });
-
-      const duration = video.duration || videoInfo.duration;
-      const thumbnails: { timestamp: number; image: string }[] = [];
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d")!;
-
-      for (let t = 0; t < duration; t += interval) {
-        await new Promise<void>((resolve) => {
-          video.onseeked = () => {
-            canvas.width = Math.min(video.videoWidth, 320);
-            canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth));
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
-            thumbnails.push({ timestamp: t, image: dataUrl });
-            setThumbnailGrid([...thumbnails]);
-            resolve();
-          };
-          video.currentTime = t;
+        await new Promise<void>((resolve, reject) => {
+          video.onloadedmetadata = () => resolve();
+          video.onerror = () => reject(new Error("Failed to load video"));
+          setTimeout(() => reject(new Error("Video load timed out")), 30000);
+          video.src = streamUrl;
         });
-      }
 
-      video.removeAttribute("src");
-      video.load();
+        const duration = video.duration || videoInfo.duration;
+        const thumbnails: { timestamp: number; image: string }[] = [];
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d")!;
+
+        for (let t = 0; t < duration; t += interval) {
+          await new Promise<void>((resolve) => {
+            video.onseeked = () => {
+              canvas.width = Math.min(video.videoWidth, 320);
+              canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth));
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
+              thumbnails.push({ timestamp: t, image: dataUrl });
+              setThumbnailGrid([...thumbnails]);
+              resolve();
+            };
+            video.currentTime = t;
+          });
+        }
+
+        video.removeAttribute("src");
+        video.load();
+      } else {
+        // No stream URL (Vercel) — use YouTube storyboard sprites
+        const res = await fetch("/api/storyboard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, interval }),
+        });
+        const data = await res.json();
+
+        if (data.storyboard) {
+          const sb = data.storyboard;
+          const thumbnails: { timestamp: number; image: string }[] = [];
+
+          // Fetch sprite sheets and extract individual thumbnails
+          const totalThumbs = Math.ceil(sb.duration / sb.interval);
+          const totalSheets = Math.ceil(totalThumbs / sb.thumbsPerSheet);
+
+          for (let sheet = 0; sheet < totalSheets; sheet++) {
+            const sheetUrl = sb.templateUrl.replace("$M", String(sheet));
+
+            try {
+              // Fetch sprite sheet through a canvas (proxy via img tag)
+              const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+                const i = new Image();
+                i.crossOrigin = "anonymous";
+                i.onload = () => resolve(i);
+                i.onerror = () => reject(new Error("Failed to load sprite sheet"));
+                i.src = sheetUrl;
+              });
+
+              const canvas = document.createElement("canvas");
+              canvas.width = sb.thumbWidth;
+              canvas.height = sb.thumbHeight;
+              const ctx = canvas.getContext("2d")!;
+
+              for (let idx = 0; idx < sb.thumbsPerSheet; idx++) {
+                const globalIdx = sheet * sb.thumbsPerSheet + idx;
+                const timestamp = globalIdx * sb.interval;
+                if (timestamp >= sb.duration) break;
+
+                // Only include every Nth frame based on requested interval
+                if (timestamp % interval !== 0 && interval > sb.interval) continue;
+
+                const col = idx % sb.cols;
+                const row = Math.floor(idx / sb.cols);
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(
+                  img,
+                  col * sb.thumbWidth, row * sb.thumbHeight,
+                  sb.thumbWidth, sb.thumbHeight,
+                  0, 0,
+                  sb.thumbWidth, sb.thumbHeight
+                );
+
+                const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+                thumbnails.push({ timestamp, image: dataUrl });
+                setThumbnailGrid([...thumbnails]);
+              }
+            } catch {
+              // Skip this sheet on error
+            }
+          }
+        } else if (data.thumbnails?.length > 0) {
+          setThumbnailGrid(data.thumbnails);
+        } else {
+          setError("Could not extract frames. Try using AI Timestamp Suggestions instead.");
+        }
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to extract thumbnails");
     } finally {
