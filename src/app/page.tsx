@@ -43,6 +43,7 @@ export default function Home() {
   const [selectedThumbs, setSelectedThumbs] = useState<Record<number, number>>({});
   const [thumbPreviews, setThumbPreviews] = useState<Record<number, string>>({}); // originalTs -> preview image // original timestamp -> adjusted timestamp
   const [adjustingThumb, setAdjustingThumb] = useState<number | null>(null); // timestamp being fine-tuned
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
 
   // UI state
   const [loading, setLoading] = useState("");
@@ -82,9 +83,17 @@ export default function Home() {
       setSelectedThumbs({});
       setThumbPreviews({});
       setAdjustingThumb(null);
+      setStreamUrl(null);
       setStep("capture");
 
-      // Fetch transcript in background
+      // Fetch stream URL and transcript in background
+      fetch(`/api/video-stream?v=${data.videoId}`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.streamUrl) setStreamUrl(d.streamUrl);
+        })
+        .catch(() => {});
+
       fetch("/api/transcript", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -102,22 +111,72 @@ export default function Home() {
     }
   };
 
+  // Client-side frame capture using hidden video + canvas
+  const captureFrameFromVideo = useCallback(
+    (timestamp: number): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        if (!streamUrl) {
+          reject(new Error("Video stream not ready yet. Please wait a moment and try again."));
+          return;
+        }
+
+        const video = document.createElement("video");
+        video.crossOrigin = "anonymous";
+        video.preload = "auto";
+        video.muted = true;
+
+        const cleanup = () => {
+          video.removeAttribute("src");
+          video.load();
+        };
+
+        video.onloadedmetadata = () => {
+          video.currentTime = timestamp;
+        };
+
+        video.onseeked = () => {
+          try {
+            const canvas = document.createElement("canvas");
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext("2d")!;
+            ctx.drawImage(video, 0, 0);
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+            cleanup();
+            resolve(dataUrl);
+          } catch (e) {
+            cleanup();
+            reject(e);
+          }
+        };
+
+        video.onerror = () => {
+          cleanup();
+          reject(new Error("Failed to load video for frame capture"));
+        };
+
+        // Timeout after 15s
+        setTimeout(() => {
+          cleanup();
+          reject(new Error("Frame capture timed out"));
+        }, 15000);
+
+        video.src = streamUrl;
+      });
+    },
+    [streamUrl]
+  );
+
   // Extract frame
   const captureFrame = useCallback(
     async (timestamp: number) => {
       setLoading("Extracting frame...");
       try {
-        const res = await fetch("/api/extract-frame", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, timestamp }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        const image = await captureFrameFromVideo(timestamp);
 
         const newShot: Screenshot = {
           id: `shot-${Date.now()}`,
-          image: data.image,
+          image,
           timestamp,
           description: "",
         };
@@ -128,7 +187,7 @@ export default function Home() {
         setLoading("");
       }
     },
-    [url]
+    [captureFrameFromVideo]
   );
 
   // AI suggest timestamps
@@ -149,6 +208,7 @@ export default function Home() {
           description: videoInfo?.description,
           duration: videoInfo?.duration,
           transcript,
+          thumbnails: thumbnailGrid.length > 0 ? thumbnailGrid : undefined,
         }),
       });
       const data = await res.json();
@@ -174,20 +234,51 @@ export default function Home() {
     }
   };
 
-  // Extract thumbnail grid (every N seconds)
-  const extractThumbnailGrid = async (interval = 5) => {
-    setLoading("Extracting all frames (this takes a moment)...");
+  // Extract thumbnail grid client-side (every N seconds)
+  const extractThumbnailGrid = async (interval = 1) => {
+    if (!streamUrl || !videoInfo) {
+      setError("Video stream not ready yet. Please wait a moment and try again.");
+      return;
+    }
+    setLoading("Extracting frames (this may take a moment)...");
     setThumbnailGrid([]);
     setSelectedThumbs({});
+
     try {
-      const res = await fetch("/api/extract-thumbnails", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, duration: videoInfo?.duration, interval }),
+      const video = document.createElement("video");
+      video.crossOrigin = "anonymous";
+      video.preload = "auto";
+      video.muted = true;
+
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => reject(new Error("Failed to load video"));
+        setTimeout(() => reject(new Error("Video load timed out")), 30000);
+        video.src = streamUrl;
       });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      setThumbnailGrid(data.thumbnails);
+
+      const duration = video.duration || videoInfo.duration;
+      const thumbnails: { timestamp: number; image: string }[] = [];
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d")!;
+
+      for (let t = 0; t < duration; t += interval) {
+        await new Promise<void>((resolve) => {
+          video.onseeked = () => {
+            canvas.width = Math.min(video.videoWidth, 320);
+            canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth));
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
+            thumbnails.push({ timestamp: t, image: dataUrl });
+            setThumbnailGrid([...thumbnails]);
+            resolve();
+          };
+          video.currentTime = t;
+        });
+      }
+
+      video.removeAttribute("src");
+      video.load();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to extract thumbnails");
     } finally {
@@ -215,17 +306,10 @@ export default function Home() {
     const newTs = Math.max(0, current + delta);
     setSelectedThumbs((prev) => ({ ...prev, [originalTs]: newTs }));
 
-    // Fetch preview for the adjusted timestamp
+    // Capture preview for the adjusted timestamp client-side
     try {
-      const res = await fetch("/api/extract-frame", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, timestamp: newTs }),
-      });
-      const data = await res.json();
-      if (data.image) {
-        setThumbPreviews((prev) => ({ ...prev, [originalTs]: data.image }));
-      }
+      const image = await captureFrameFromVideo(newTs);
+      setThumbPreviews((prev) => ({ ...prev, [originalTs]: image }));
     } catch {
       // Keep existing preview on failure
     }

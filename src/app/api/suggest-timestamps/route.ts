@@ -1,44 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
-import { execFile } from "child_process";
-import { promisify } from "util";
-import { readFile, unlink, mkdtemp } from "fs/promises";
-import { join } from "path";
-import { tmpdir } from "os";
-
-const exec = promisify(execFile);
 
 export async function POST(req: NextRequest) {
-  const { apiKey, url, title, description, duration, transcript } = await req.json();
+  const { apiKey, url, title, description, duration, transcript, thumbnails } = await req.json();
   if (!apiKey) return NextResponse.json({ error: "API key required" }, { status: 400 });
-
-  let tmpDir: string | null = null;
 
   try {
     const ai = new GoogleGenAI({ apiKey });
-
-    // Download a low-res version of the video for Gemini analysis
-    tmpDir = await mkdtemp(join(tmpdir(), "recipe-video-"));
-    const videoPath = join(tmpDir, "video.mp4");
-
-    await exec("/opt/homebrew/bin/yt-dlp", [
-      "-f", "worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst",
-      "--merge-output-format", "mp4",
-      "-o", videoPath,
-      url,
-    ], { timeout: 120000 });
-
-    const videoBuffer = await readFile(videoPath);
-    const videoBase64 = videoBuffer.toString("base64");
-
-    // Clean up immediately
-    await unlink(videoPath).catch(() => {});
 
     const transcriptText = transcript?.segments
       ?.map((s: { start: number; text: string }) => `[${s.start}s] ${s.text}`)
       .join("\n") || "";
 
-    const prompt = `You are analyzing this cooking/recipe video to find the best moments for blog post screenshots.
+    // Build parts array - include thumbnail images if available for visual context
+    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+
+    // Add some thumbnails for visual context (first, middle, last)
+    if (thumbnails && thumbnails.length > 0) {
+      const indices = [
+        0,
+        Math.floor(thumbnails.length * 0.25),
+        Math.floor(thumbnails.length * 0.5),
+        Math.floor(thumbnails.length * 0.75),
+        thumbnails.length - 1,
+      ];
+      const unique = [...new Set(indices)].filter((i) => i < thumbnails.length);
+
+      for (const idx of unique) {
+        const thumb = thumbnails[idx];
+        if (thumb?.image) {
+          const base64 = thumb.image.replace(/^data:image\/\w+;base64,/, "");
+          parts.push({
+            inlineData: { mimeType: "image/jpeg", data: base64 },
+          });
+          parts.push({ text: `[Frame at ${thumb.timestamp}s]` });
+        }
+      }
+    }
+
+    const prompt = `You are analyzing a cooking/recipe video to find the best moments for blog post screenshots.
 
 Video: "${title}"
 Duration: ${duration} seconds
@@ -46,7 +46,9 @@ Description: ${description || "N/A"}
 
 ${transcriptText ? `Transcript:\n${transcriptText.slice(0, 4000)}` : ""}
 
-Watch the video carefully and suggest 6-8 timestamps (in seconds) that would make the best screenshots for a recipe blog post. Focus on:
+${thumbnails?.length ? `I've included ${thumbnails.length} sample frames from the video above for visual context.` : ""}
+
+Suggest 6-8 timestamps (in seconds) that would make the best screenshots for a recipe blog post. Focus on:
 1. The finished dish (hero shot) — the most appetizing moment
 2. Key ingredient preparation moments (chopping, mixing, etc.)
 3. Important cooking technique steps (searing, baking, etc.)
@@ -57,17 +59,11 @@ Watch the video carefully and suggest 6-8 timestamps (in seconds) that would mak
 Return ONLY a JSON array of objects with "timestamp" (number) and "description" (string) fields.
 Example: [{"timestamp": 45, "description": "Chopping fresh herbs"}, ...]`;
 
+    parts.push({ text: prompt });
+
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { inlineData: { mimeType: "video/mp4", data: videoBase64 } },
-            { text: prompt },
-          ],
-        },
-      ],
+      contents: [{ role: "user", parts }],
     });
 
     const text = response.text || "";

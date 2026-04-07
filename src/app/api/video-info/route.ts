@@ -1,41 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
-import { execFile } from "child_process";
-import { promisify } from "util";
-
-const exec = promisify(execFile);
+import { Innertube } from "youtubei.js";
 
 export async function POST(req: NextRequest) {
   const { url } = await req.json();
   if (!url) return NextResponse.json({ error: "URL required" }, { status: 400 });
 
   try {
-    const { stdout } = await exec("/opt/homebrew/bin/yt-dlp", [
-      "--dump-json",
-      "--no-download",
-      url,
-    ]);
-
-    const info = JSON.parse(stdout);
-
-    // duration can sometimes be missing or wrong — try multiple sources
-    let duration = info.duration;
-    if (!duration && info.duration_string) {
-      // Parse "MM:SS" or "HH:MM:SS"
-      const parts = info.duration_string.split(":").map(Number);
-      if (parts.length === 2) duration = parts[0] * 60 + parts[1];
-      if (parts.length === 3) duration = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    const videoId = extractVideoId(url);
+    if (!videoId) {
+      return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
     }
 
+    const yt = await Innertube.create();
+    const info = await yt.getBasicInfo(videoId);
+
+    const details = info.basic_info;
+
     return NextResponse.json({
-      title: info.title,
-      duration: Math.ceil(duration || 0),
-      thumbnail: info.thumbnail,
-      description: info.description,
-      channel: info.channel,
-      videoId: info.id,
+      title: details.title || "",
+      duration: details.duration || 0,
+      thumbnail: details.thumbnail?.[0]?.url || "",
+      description: details.short_description || "",
+      channel: details.channel?.name || details.author || "",
+      videoId,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Failed to fetch video info";
     return NextResponse.json({ error: msg }, { status: 500 });
   }
+}
+
+function extractVideoId(url: string): string | null {
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([a-zA-Z0-9_-]{11})/,
+    /^([a-zA-Z0-9_-]{11})$/,
+  ];
+  for (const p of patterns) {
+    const m = url.match(p);
+    if (m) return m[1];
+  }
+  return null;
 }

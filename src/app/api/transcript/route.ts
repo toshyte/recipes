@@ -1,63 +1,72 @@
 import { NextRequest, NextResponse } from "next/server";
-import { execFile } from "child_process";
-import { promisify } from "util";
-
-const exec = promisify(execFile);
+import { Innertube } from "youtubei.js";
 
 export async function POST(req: NextRequest) {
   const { url } = await req.json();
   if (!url) return NextResponse.json({ error: "URL required" }, { status: 400 });
 
   try {
-    // Try to get auto-generated or manual subtitles
-    const { stdout } = await exec("/opt/homebrew/bin/yt-dlp", [
-      "--write-auto-sub",
-      "--sub-lang", "en",
-      "--skip-download",
-      "--print-json",
-      "--sub-format", "json3",
-      "-o", "-",
-      url,
-    ], { maxBuffer: 10 * 1024 * 1024 });
+    const videoId = extractVideoId(url);
+    if (!videoId) {
+      return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
+    }
 
-    const info = JSON.parse(stdout);
+    const yt = await Innertube.create();
+    const info = await yt.getBasicInfo(videoId);
 
-    // Check for subtitle file references
-    const subtitleUrl =
-      info.requested_subtitles?.en?.url ||
-      info.automatic_captions?.en?.[0]?.url;
+    // Try to get transcript
+    try {
+      const transcriptData = await info.getTranscript();
+      const body = transcriptData?.transcript?.content;
 
-    if (subtitleUrl) {
-      // Fetch the subtitle content
-      const subRes = await fetch(subtitleUrl);
-      const subData = await subRes.json();
+      if (body && "body" in body) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const initialSegments = (body as any)?.body?.initial_segments;
+        if (Array.isArray(initialSegments)) {
+          const segments: { start: number; text: string }[] = [];
 
-      // Parse json3 format into timestamped transcript
-      const segments: { start: number; text: string }[] = [];
-      if (subData.events) {
-        for (const event of subData.events) {
-          if (event.segs) {
-            const text = event.segs.map((s: { utf8?: string }) => s.utf8 || "").join("").trim();
+          for (const seg of initialSegments) {
+            // Handle TranscriptSegment type
+            const startMs = seg?.start_ms ?? seg?.start_time_text ?? 0;
+            const text = seg?.snippet?.text ?? seg?.text ?? "";
             if (text) {
               segments.push({
-                start: Math.floor((event.tStartMs || 0) / 1000),
-                text,
+                start: Math.floor(Number(startMs) / 1000),
+                text: String(text).trim(),
               });
             }
           }
+
+          if (segments.length > 0) {
+            return NextResponse.json({
+              segments,
+              description: info.basic_info.short_description || "",
+            });
+          }
         }
       }
-
-      return NextResponse.json({ segments, description: info.description });
+    } catch {
+      // Transcript not available, fall through
     }
 
-    // Fallback: just return the description
     return NextResponse.json({
       segments: [],
-      description: info.description || "No transcript available",
+      description: info.basic_info.short_description || "No transcript available",
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Failed to get transcript";
     return NextResponse.json({ error: msg }, { status: 500 });
   }
+}
+
+function extractVideoId(url: string): string | null {
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([a-zA-Z0-9_-]{11})/,
+    /^([a-zA-Z0-9_-]{11})$/,
+  ];
+  for (const p of patterns) {
+    const m = url.match(p);
+    if (m) return m[1];
+  }
+  return null;
 }
