@@ -312,11 +312,10 @@ export default function Home() {
           const thumbnails: { timestamp: number; image: string }[] = [];
 
           // Fetch sprite sheets and extract individual thumbnails
-          const totalThumbs = Math.ceil(sb.duration / sb.interval);
-          const totalSheets = Math.ceil(totalThumbs / sb.thumbsPerSheet);
+          const sheetUrls: string[] = sb.sheetUrls || [];
 
-          for (let sheet = 0; sheet < totalSheets; sheet++) {
-            const sheetUrl = sb.templateUrl.replace("$M", String(sheet));
+          for (let sheet = 0; sheet < sheetUrls.length; sheet++) {
+            const sheetUrl = sheetUrls[sheet];
 
             try {
               // Fetch sprite sheet through a canvas (proxy via img tag)
