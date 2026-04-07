@@ -178,7 +178,7 @@ export default function Home() {
   const extractThumbnailGrid = async (interval = 5) => {
     setLoading("Extracting all frames (this takes a moment)...");
     setThumbnailGrid([]);
-    setSelectedThumbs(new Set());
+    setSelectedThumbs({});
     try {
       const res = await fetch("/api/extract-thumbnails", {
         method: "POST",
