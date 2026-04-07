@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Innertube } from "youtubei.js";
+import { extractVideoId, getInnertube } from "@/lib/youtube";
+
+export const maxDuration = 30;
 
 export async function POST(req: NextRequest) {
   const { url } = await req.json();
@@ -11,10 +13,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
     }
 
-    const yt = await Innertube.create();
+    const yt = await getInnertube();
     const info = await yt.getBasicInfo(videoId);
 
-    // Try to get transcript
     try {
       const transcriptData = await info.getTranscript();
       const body = transcriptData?.transcript?.content;
@@ -26,7 +27,6 @@ export async function POST(req: NextRequest) {
           const segments: { start: number; text: string }[] = [];
 
           for (const seg of initialSegments) {
-            // Handle TranscriptSegment type
             const startMs = seg?.start_ms ?? seg?.start_time_text ?? 0;
             const text = seg?.snippet?.text ?? seg?.text ?? "";
             if (text) {
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
         }
       }
     } catch {
-      // Transcript not available, fall through
+      // Transcript not available
     }
 
     return NextResponse.json({
@@ -57,16 +57,4 @@ export async function POST(req: NextRequest) {
     const msg = e instanceof Error ? e.message : "Failed to get transcript";
     return NextResponse.json({ error: msg }, { status: 500 });
   }
-}
-
-function extractVideoId(url: string): string | null {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([a-zA-Z0-9_-]{11})/,
-    /^([a-zA-Z0-9_-]{11})$/,
-  ];
-  for (const p of patterns) {
-    const m = url.match(p);
-    if (m) return m[1];
-  }
-  return null;
 }

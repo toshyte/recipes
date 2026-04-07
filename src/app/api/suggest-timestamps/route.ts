@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   const { apiKey, url, title, description, duration, transcript, thumbnails } = await req.json();
   if (!apiKey) return NextResponse.json({ error: "API key required" }, { status: 400 });
