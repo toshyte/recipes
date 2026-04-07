@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
 
   try {
     // Try to get auto-generated or manual subtitles
-    const { stdout } = await exec("yt-dlp", [
+    const { stdout } = await exec("/opt/homebrew/bin/yt-dlp", [
       "--write-auto-sub",
       "--sub-lang", "en",
       "--skip-download",

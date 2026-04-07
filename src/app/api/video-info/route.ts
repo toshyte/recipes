@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
   if (!url) return NextResponse.json({ error: "URL required" }, { status: 400 });
 
   try {
-    const { stdout } = await exec("yt-dlp", [
+    const { stdout } = await exec("/opt/homebrew/bin/yt-dlp", [
       "--dump-json",
       "--no-download",
       url,

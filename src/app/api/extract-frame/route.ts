@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     const outPath = join(dir, "frame.jpg");
 
     // Get the best direct video URL
-    const { stdout: videoUrl } = await exec("yt-dlp", [
+    const { stdout: videoUrl } = await exec("/opt/homebrew/bin/yt-dlp", [
       "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
       "-g",
       url,
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
     const coarseSeek = Math.max(0, timestamp - 5);
     const fineSeek = timestamp - coarseSeek;
 
-    await exec("ffmpeg", [
+    await exec("/opt/homebrew/bin/ffmpeg", [
       "-ss", String(coarseSeek),    // fast seek to nearby keyframe
       "-i", directUrl,
       "-ss", String(fineSeek),       // precise seek from there
@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
     // Check if frame was extracted and is not too small (black frames are tiny)
     if (!existsSync(outPath)) {
       // Retry without fine seek
-      await exec("ffmpeg", [
+      await exec("/opt/homebrew/bin/ffmpeg", [
         "-ss", String(timestamp),
         "-i", directUrl,
         "-vframes", "1",
@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
     // If file is suspiciously small (<5KB), it's likely a black frame — try +2s
     if (imageBuffer.length < 5000) {
       const retryPath = join(dir, "frame_retry.jpg");
-      await exec("ffmpeg", [
+      await exec("/opt/homebrew/bin/ffmpeg", [
         "-ss", String(timestamp + 2),
         "-i", directUrl,
         "-vframes", "1",

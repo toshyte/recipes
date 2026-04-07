@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     tmpDir = await mkdtemp(join(tmpdir(), "recipe-video-"));
     const videoPath = join(tmpDir, "video.mp4");
 
-    await exec("yt-dlp", [
+    await exec("/opt/homebrew/bin/yt-dlp", [
       "-f", "worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst",
       "--merge-output-format", "mp4",
       "-o", videoPath,

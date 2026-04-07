@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     const videoPath = join(dir, "video.mp4");
 
     // Step 1: Download a tiny version (lowest quality, small file)
-    await exec("yt-dlp", [
+    await exec("/opt/homebrew/bin/yt-dlp", [
       "-f", "worstvideo[ext=mp4]/worst[ext=mp4]/worst",
       "--no-audio",
       "-o", videoPath,
@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     ], { timeout: 120000 });
 
     // Step 2: Extract frames every N seconds from local file
-    await exec("ffmpeg", [
+    await exec("/opt/homebrew/bin/ffmpeg", [
       "-i", videoPath,
       "-vf", `fps=1/${interval},scale=320:-1`,
       "-q:v", "5",
